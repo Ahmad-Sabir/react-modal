@@ -131,6 +131,7 @@ export default class ModalPortal extends Component {
       this.afterClose();
     }
     clearTimeout(this.closeTimer);
+    cancelAnimationFrame(this.openAnimationFrame);
   }
 
   setOverlayRef = overlay => {
@@ -222,14 +223,16 @@ export default class ModalPortal extends Component {
       }
 
       this.setState({ isOpen: true }, () => {
-        this.setState({ afterOpen: true });
+        this.openAnimationFrame = requestAnimationFrame(() => {
+          this.setState({ afterOpen: true });
 
-        if (this.props.isOpen && this.props.onAfterOpen) {
-          this.props.onAfterOpen({
-            overlayEl: this.overlay,
-            contentEl: this.content
-          });
-        }
+          if (this.props.isOpen && this.props.onAfterOpen) {
+            this.props.onAfterOpen({
+              overlayEl: this.overlay,
+              contentEl: this.content
+            });
+          }
+        });
       });
     }
   };
