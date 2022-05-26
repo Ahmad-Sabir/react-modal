@@ -1,11 +1,15 @@
-import React, { Component } from "react";
+import { Component } from "react";
 import PropTypes from "prop-types";
 import * as focusManager from "../helpers/focusManager";
 import scopeTab from "../helpers/scopeTab";
 import * as ariaAppHider from "../helpers/ariaAppHider";
-import * as refCount from "../helpers/refCount";
-import * as bodyClassList from "../helpers/bodyClassList";
-import SafeHTMLElement from "../helpers/safeHTMLElement";
+import * as classList from "../helpers/classList";
+import SafeHTMLElement, {
+  SafeHTMLCollection,
+  SafeNodeList
+} from "../helpers/safeHTMLElement";
+import portalOpenInstances from "../helpers/portalOpenInstances";
+import "../helpers/bodyTrap";
 
 // so that our CSS is statically analyzable
 const CLASS_NAMES = {
@@ -16,12 +20,15 @@ const CLASS_NAMES = {
 const TAB_KEY = 9;
 const ESC_KEY = 27;
 
+let ariaHiddenInstances = 0;
+
 export default class ModalPortal extends Component {
   static defaultProps = {
     style: {
       overlay: {},
       content: {}
-    }
+    },
+    defaultStyles: {}
   };
 
   static propTypes = {
@@ -37,19 +44,34 @@ export default class ModalPortal extends Component {
     className: PropTypes.oneOfType([PropTypes.string, PropTypes.object]),
     overlayClassName: PropTypes.oneOfType([PropTypes.string, PropTypes.object]),
     bodyOpenClassName: PropTypes.string,
+    htmlOpenClassName: PropTypes.string,
     ariaHideApp: PropTypes.bool,
-    appElement: PropTypes.instanceOf(SafeHTMLElement),
+    appElement: PropTypes.oneOfType([
+      PropTypes.instanceOf(SafeHTMLElement),
+      PropTypes.instanceOf(SafeHTMLCollection),
+      PropTypes.instanceOf(SafeNodeList),
+      PropTypes.arrayOf(PropTypes.instanceOf(SafeHTMLElement))
+    ]),
     onAfterOpen: PropTypes.func,
+    onAfterClose: PropTypes.func,
     onRequestClose: PropTypes.func,
     closeTimeoutMS: PropTypes.number,
     shouldFocusAfterRender: PropTypes.bool,
     shouldCloseOnOverlayClick: PropTypes.bool,
     shouldReturnFocusAfterClose: PropTypes.bool,
+    preventScroll: PropTypes.bool,
     role: PropTypes.string,
     contentLabel: PropTypes.string,
     aria: PropTypes.object,
+    data: PropTypes.object,
     children: PropTypes.node,
-    shouldCloseOnEsc: PropTypes.bool
+    shouldCloseOnEsc: PropTypes.bool,
+    overlayRef: PropTypes.func,
+    contentRef: PropTypes.func,
+    id: PropTypes.string,
+    overlayElement: PropTypes.func,
+    contentElement: PropTypes.func,
+    testId: PropTypes.string
   };
 
   constructor(props) {
@@ -65,88 +87,128 @@ export default class ModalPortal extends Component {
   }
 
   componentDidMount() {
-    // Focus needs to be set when mounting and already open
     if (this.props.isOpen) {
-      this.setFocusAfterRender(true);
       this.open();
     }
   }
 
-  componentWillReceiveProps(newProps) {
+  componentDidUpdate(prevProps, prevState) {
     if (process.env.NODE_ENV !== "production") {
-      if (newProps.bodyOpenClassName !== this.props.bodyOpenClassName) {
+      if (prevProps.bodyOpenClassName !== this.props.bodyOpenClassName) {
         // eslint-disable-next-line no-console
         console.warn(
           'React-Modal: "bodyOpenClassName" prop has been modified. ' +
             "This may cause unexpected behavior when multiple modals are open."
         );
       }
+      if (prevProps.htmlOpenClassName !== this.props.htmlOpenClassName) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          'React-Modal: "htmlOpenClassName" prop has been modified. ' +
+            "This may cause unexpected behavior when multiple modals are open."
+        );
+      }
     }
-    // Focus only needs to be set once when the modal is being opened
-    if (!this.props.isOpen && newProps.isOpen) {
-      this.setFocusAfterRender(true);
+
+    if (this.props.isOpen && !prevProps.isOpen) {
       this.open();
-    } else if (this.props.isOpen && !newProps.isOpen) {
+    } else if (!this.props.isOpen && prevProps.isOpen) {
       this.close();
     }
-  }
 
-  componentDidUpdate() {
-    if (this.focusAfterRender) {
+    // Focus only needs to be set once when the modal is being opened
+    if (
+      this.props.shouldFocusAfterRender &&
+      this.state.isOpen &&
+      !prevState.isOpen
+    ) {
       this.focusContent();
-      this.setFocusAfterRender(false);
     }
   }
 
   componentWillUnmount() {
-    // Remove body class
-    bodyClassList.remove(this.props.bodyOpenClassName);
-    this.beforeClose();
+    if (this.state.isOpen) {
+      this.afterClose();
+    }
     clearTimeout(this.closeTimer);
+    cancelAnimationFrame(this.openAnimationFrame);
   }
-
-  setFocusAfterRender = focus => {
-    this.focusAfterRender = this.props.shouldFocusAfterRender && focus;
-  };
 
   setOverlayRef = overlay => {
     this.overlay = overlay;
+    this.props.overlayRef && this.props.overlayRef(overlay);
   };
 
   setContentRef = content => {
     this.content = content;
+    this.props.contentRef && this.props.contentRef(content);
   };
 
   beforeOpen() {
-    const { appElement, ariaHideApp, bodyOpenClassName } = this.props;
-    // Add body class
-    bodyClassList.add(bodyOpenClassName);
-    // Add aria-hidden to appElement
+    const {
+      appElement,
+      ariaHideApp,
+      htmlOpenClassName,
+      bodyOpenClassName
+    } = this.props;
+
+    // Add classes.
+    bodyOpenClassName && classList.add(document.body, bodyOpenClassName);
+
+    htmlOpenClassName &&
+      classList.add(
+        document.getElementsByTagName("html")[0],
+        htmlOpenClassName
+      );
+
     if (ariaHideApp) {
+      ariaHiddenInstances += 1;
       ariaAppHider.hide(appElement);
     }
-  }
 
-  beforeClose() {
-    const { appElement, ariaHideApp } = this.props;
-    // Reset aria-hidden attribute if all modals have been removed
-    if (ariaHideApp && refCount.totalCount() < 1) {
-      ariaAppHider.show(appElement);
-    }
+    portalOpenInstances.register(this);
   }
 
   afterClose = () => {
-    // Remove body class
-    bodyClassList.remove(this.props.bodyOpenClassName);
+    const {
+      appElement,
+      ariaHideApp,
+      htmlOpenClassName,
+      bodyOpenClassName
+    } = this.props;
+
+    // Remove classes.
+    bodyOpenClassName && classList.remove(document.body, bodyOpenClassName);
+
+    htmlOpenClassName &&
+      classList.remove(
+        document.getElementsByTagName("html")[0],
+        htmlOpenClassName
+      );
+
+    // Reset aria-hidden attribute if all modals have been removed
+    if (ariaHideApp && ariaHiddenInstances > 0) {
+      ariaHiddenInstances -= 1;
+
+      if (ariaHiddenInstances === 0) {
+        ariaAppHider.show(appElement);
+      }
+    }
 
     if (this.props.shouldFocusAfterRender) {
       if (this.props.shouldReturnFocusAfterClose) {
-        focusManager.returnFocus();
+        focusManager.returnFocus(this.props.preventScroll);
         focusManager.teardownScopedFocus();
       } else {
         focusManager.popWithoutFocus();
       }
     }
+
+    if (this.props.onAfterClose) {
+      this.props.onAfterClose();
+    }
+
+    portalOpenInstances.deregister(this);
   };
 
   open = () => {
@@ -161,17 +223,21 @@ export default class ModalPortal extends Component {
       }
 
       this.setState({ isOpen: true }, () => {
-        this.setState({ afterOpen: true });
+        this.openAnimationFrame = requestAnimationFrame(() => {
+          this.setState({ afterOpen: true });
 
-        if (this.props.isOpen && this.props.onAfterOpen) {
-          this.props.onAfterOpen();
-        }
+          if (this.props.isOpen && this.props.onAfterOpen) {
+            this.props.onAfterOpen({
+              overlayEl: this.overlay,
+              contentEl: this.content
+            });
+          }
+        });
       });
     }
   };
 
   close = () => {
-    this.beforeClose();
     if (this.props.closeTimeoutMS > 0) {
       this.closeWithTimeout();
     } else {
@@ -181,7 +247,9 @@ export default class ModalPortal extends Component {
 
   // Don't steal focus from inner elements
   focusContent = () =>
-    this.content && !this.contentHasFocus() && this.content.focus();
+    this.content &&
+    !this.contentHasFocus() &&
+    this.content.focus({ preventScroll: true });
 
   closeWithTimeout = () => {
     const closesAt = Date.now() + this.props.closeTimeoutMS;
@@ -211,7 +279,7 @@ export default class ModalPortal extends Component {
     }
 
     if (this.props.shouldCloseOnEsc && event.keyCode === ESC_KEY) {
-      event.preventDefault();
+      event.stopPropagation();
       this.requestClose(event);
     }
   };
@@ -229,13 +297,6 @@ export default class ModalPortal extends Component {
       }
     }
     this.shouldClose = null;
-    this.moveFromContentToOverlay = null;
-  };
-
-  handleOverlayOnMouseUp = () => {
-    if (this.moveFromContentToOverlay === null) {
-      this.shouldClose = false;
-    }
   };
 
   handleContentOnMouseUp = () => {
@@ -246,7 +307,6 @@ export default class ModalPortal extends Component {
     if (!this.props.shouldCloseOnOverlayClick && event.target == this.overlay) {
       event.preventDefault();
     }
-    this.moveFromContentToOverlay = false;
   };
 
   handleContentOnClick = () => {
@@ -255,7 +315,6 @@ export default class ModalPortal extends Component {
 
   handleContentOnMouseDown = () => {
     this.shouldClose = false;
-    this.moveFromContentToOverlay = false;
   };
 
   requestClose = event =>
@@ -290,42 +349,53 @@ export default class ModalPortal extends Component {
       : className;
   };
 
-  ariaAttributes = items =>
+  attributesFromObject = (prefix, items) =>
     Object.keys(items).reduce((acc, name) => {
-      acc[`aria-${name}`] = items[name];
+      acc[`${prefix}-${name}`] = items[name];
       return acc;
     }, {});
 
   render() {
-    const { className, overlayClassName, defaultStyles } = this.props;
+    const {
+      id,
+      className,
+      overlayClassName,
+      defaultStyles,
+      children
+    } = this.props;
     const contentStyles = className ? {} : defaultStyles.content;
     const overlayStyles = overlayClassName ? {} : defaultStyles.overlay;
 
-    return this.shouldBeClosed() ? null : (
-      <div
-        ref={this.setOverlayRef}
-        className={this.buildClassName("overlay", overlayClassName)}
-        style={{ ...overlayStyles, ...this.props.style.overlay }}
-        onClick={this.handleOverlayOnClick}
-        onMouseDown={this.handleOverlayOnMouseDown}
-        onMouseUp={this.handleOverlayOnMouseUp}
-      >
-        <div
-          ref={this.setContentRef}
-          style={{ ...contentStyles, ...this.props.style.content }}
-          className={this.buildClassName("content", className)}
-          tabIndex="-1"
-          onKeyDown={this.handleKeyDown}
-          onMouseDown={this.handleContentOnMouseDown}
-          onMouseUp={this.handleContentOnMouseUp}
-          onClick={this.handleContentOnClick}
-          role={this.props.role}
-          aria-label={this.props.contentLabel}
-          {...this.ariaAttributes(this.props.aria || {})}
-        >
-          {this.props.children}
-        </div>
-      </div>
-    );
+    if (this.shouldBeClosed()) {
+      return null;
+    }
+
+    const overlayProps = {
+      ref: this.setOverlayRef,
+      className: this.buildClassName("overlay", overlayClassName),
+      style: { ...overlayStyles, ...this.props.style.overlay },
+      onClick: this.handleOverlayOnClick,
+      onMouseDown: this.handleOverlayOnMouseDown
+    };
+
+    const contentProps = {
+      id,
+      ref: this.setContentRef,
+      style: { ...contentStyles, ...this.props.style.content },
+      className: this.buildClassName("content", className),
+      tabIndex: "-1",
+      onKeyDown: this.handleKeyDown,
+      onMouseDown: this.handleContentOnMouseDown,
+      onMouseUp: this.handleContentOnMouseUp,
+      onClick: this.handleContentOnClick,
+      role: this.props.role,
+      "aria-label": this.props.contentLabel,
+      ...this.attributesFromObject("aria", { modal: true, ...this.props.aria }),
+      ...this.attributesFromObject("data", this.props.data || {}),
+      "data-testid": this.props.testId
+    };
+
+    const contentElement = this.props.contentElement(contentProps, children);
+    return this.props.overlayElement(overlayProps, contentElement);
   }
 }

@@ -1,4 +1,35 @@
+import warning from "warning";
+import { canUseDOM } from "./safeHTMLElement";
+
 let globalElement = null;
+
+/* eslint-disable no-console */
+/* istanbul ignore next */
+export function resetState() {
+  if (globalElement) {
+    if (globalElement.removeAttribute) {
+      globalElement.removeAttribute("aria-hidden");
+    } else if (globalElement.length != null) {
+      globalElement.forEach(element => element.removeAttribute("aria-hidden"));
+    } else {
+      document
+        .querySelectorAll(globalElement)
+        .forEach(element => element.removeAttribute("aria-hidden"));
+    }
+  }
+  globalElement = null;
+}
+
+/* istanbul ignore next */
+export function log() {
+  if (process.env.NODE_ENV !== "production") {
+    var check = globalElement || {};
+    console.log("ariaAppHider ----------");
+    console.log(check.nodeName, check.className, check.id);
+    console.log("end ariaAppHider ----------");
+  }
+}
+/* eslint-enable no-console */
 
 export function assertNodeList(nodeList, selector) {
   if (!nodeList || !nodeList.length) {
@@ -10,51 +41,51 @@ export function assertNodeList(nodeList, selector) {
 
 export function setElement(element) {
   let useElement = element;
-  if (typeof useElement === "string") {
+  if (typeof useElement === "string" && canUseDOM) {
     const el = document.querySelectorAll(useElement);
     assertNodeList(el, useElement);
-    useElement = "length" in el ? el[0] : el;
+    useElement = el;
   }
   globalElement = useElement || globalElement;
   return globalElement;
 }
 
-export function tryForceFallback() {
-  if (document && document.body) {
-    // force fallback to document.body
-    setElement(document.body);
-    return true;
-  }
-  return false;
-}
-
 export function validateElement(appElement) {
-  if (!appElement && !globalElement && !tryForceFallback()) {
-    throw new Error(
+  const el = appElement || globalElement;
+  if (el) {
+    return Array.isArray(el) ||
+      el instanceof HTMLCollection ||
+      el instanceof NodeList
+      ? el
+      : [el];
+  } else {
+    warning(
+      false,
       [
-        "react-modal: Cannot fallback to `document.body`, because it is not",
-        "ready or available. If you are doing server-side rendering, use this",
-        "function to defined an element. `Modal.setAppElement(el)` to make",
-        "this accessible"
+        "react-modal: App element is not defined.",
+        "Please use `Modal.setAppElement(el)` or set `appElement={el}`.",
+        "This is needed so screen readers don't see main content",
+        "when modal is opened. It is not recommended, but you can opt-out",
+        "by setting `ariaHideApp={false}`."
       ].join(" ")
     );
+
+    return [];
   }
 }
 
 export function hide(appElement) {
-  validateElement(appElement);
-  (appElement || globalElement).setAttribute("aria-hidden", "true");
+  for (let el of validateElement(appElement)) {
+    el.setAttribute("aria-hidden", "true");
+  }
 }
 
 export function show(appElement) {
-  validateElement(appElement);
-  (appElement || globalElement).removeAttribute("aria-hidden");
+  for (let el of validateElement(appElement)) {
+    el.removeAttribute("aria-hidden");
+  }
 }
 
 export function documentNotReadyOrSSRTesting() {
   globalElement = null;
-}
-
-export function resetForTesting() {
-  globalElement = document.body;
 }

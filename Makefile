@@ -1,13 +1,20 @@
-NODE=$(shell which node)
-NPM=$(shell which npm)
-YARN=$(shell which yarn)
-JQ=$(shell which jq)
+NODE=$(shell which node 2> /dev/null)
+NPM=$(shell which npm 2> /dev/null)
+YARN=$(shell which yarn 2> /dev/null)
+JQ=$(shell which jq 2> /dev/null)
+
+PKM?=$(if $(YARN),$(YARN),$(shell which npm))
 
 BABEL=./node_modules/.bin/babel
 COVERALLS=./node_modules/coveralls/bin/coveralls.js
 REMOTE="git@github.com:reactjs/react-modal"
 CURRENT_VERSION:=$(shell jq ".version" package.json)
 COVERAGE?=true
+
+BRANCH=$(shell git rev-parse --abbrev-ref HEAD)
+CURRENT_VERSION:=$(shell jq ".version" package.json)
+
+VERSION:=$(if $(RELEASE),$(shell read -p "Release $(CURRENT_VERSION) -> " V && echo $$V),"HEAD")
 
 help: info
 	@echo
@@ -29,18 +36,17 @@ help: info
 	@echo "  make publish-all      - publish version and docs."
 
 info:
-	@echo node version: `$(NODE) --version` "($(NODE))"
-	@echo npm version: `$(NPM) --version` "($(NPM))"
-	@echo yarn version: `$(YARN) --version` "($(YARN))"
-	@echo jq version: `$(JQ) --version` "($(JQ))"
+	@[[ ! -z "$(NODE)" ]] && echo node version: `$(NODE) --version` "$(NODE)"
+	@[[ ! -z "$(PKM)" ]] && echo $(shell basename $(PKM)) version: `$(PKM) --version` "$(PKM)"
+	@[[ ! -z "$(JQ)" ]] && echo jq version: `$(JQ) --version` "$(JQ)"
 
 deps: deps-project deps-docs
 
 deps-project:
-	@[[ ! -z "$(YARN)" ]] && $(YARN) install || $(NPM) install
+	@$(PKM) install
 
 deps-docs:
-	@gitbook install
+	@pip install mkdocs mkdocs-material jsx-lexer
 
 # Rules for development
 
@@ -54,7 +60,7 @@ tests-single-run:
 	@npm run test -- --single-run
 
 coveralls:
-	-cat ./coverage/lcov.info | ./node_modules/coveralls/bin/coveralls.js 2>/dev/null
+	-cat ./coverage/lcov.info | $(COVERALLS) 2>/dev/null
 
 tests-ci: clean lint
 	@COVERAGE=$(COVERAGE) make tests-single-run coveralls
@@ -63,27 +69,14 @@ lint:
 	@npm run lint
 
 docs: build-docs
-	gitbook serve
+	pygmentize -S default -f html -a .codehilite > docs/pygments.css
+	mkdocs serve
 
 # Rules for build and publish
 
 check-working-tree:
-	@sh ./scripts/repo_status
-
-.version:
-	@echo "[Updating react-modal version]"
-	@sh ./scripts/version $(CURRENT_VERSION)
-	@$(JQ) '.version' package.json | cut -d\" -f2 > .version
-
-.branch:
-	@echo "[Release from branch]"
-	@git branch | grep '^*' | awk '{ print $$2 }' > .branch
-	@echo "Current branch: `cat .branch`"
-
-changelog:
-	@echo "[Updating CHANGELOG.md $(CURRENT_VERSION) > `cat .version`]"
-	@python3 ./scripts/changelog.py v$(CURRENT_VERSION) v`cat .version` > .changelog_update
-	@cat .changelog_update CHANGELOG.md > tmp && mv tmp CHANGELOG.md
+	@[ -z "`git status -s`" ] && \
+	echo "Stopping publish. There are change to commit or discard." || echo "Worktree is clean."
 
 compile:
 	@echo "[Compiling source]"
@@ -91,23 +84,32 @@ compile:
 
 build: compile
 	@echo "[Building dists]"
-	@./node_modules/.bin/webpack --config webpack.dist.config.js
+	@npx webpack --config ./scripts/webpack.dist.config.js
 
-release-commit:
-	git commit --allow-empty -m "Release v`cat .version`."
+pre-release-commit:
+	git commit --allow-empty -m "Release v$(VERSION)."
+
+changelog:
+	@echo "[Updating CHANGELOG.md $(CURRENT_VERSION) > $(VERSION)]"
+	python ./scripts/changelog.py -a $(VERSION) > CHANGELOG.md
+
+update-package-version:
+	cat package.json | jq '.version="$(VERSION)"' > tmp; mv -f tmp package.json
+
+release-commit: pre-release-commit update-package-version changelog
 	@git add .
 	@git commit --amend -m "`git log -1 --format=%s`"
 
 release-tag:
-	git tag "v`cat .version`"
+	git tag "v$(VERSION)" -m "`python ./scripts/changelog.py -c $(VERSION)`"
 
 publish-version: release-commit release-tag
 	@echo "[Publishing]"
-	git push $(REMOTE) "`cat .branch`" "v`cat .version`"
+	git push $(REMOTE) "$(BRANCH)" "v$(VERSION)"
 	npm publish
 
-pre-publish: clean .branch .version changelog
-pre-build: deps-project tests-ci build
+pre-publish: clean
+pre-build: deps-project tests-single-run build
 
 publish: check-working-tree pre-publish pre-build publish-version publish-finished
 
@@ -121,7 +123,7 @@ init-docs-repo:
 build-docs:
 	@echo "[Building documentation]"
 	@rm -rf _book
-	@gitbook build -g reactjs/react-modal
+	@mkdocs build
 
 pre-publish-docs: clean-docs init-docs-repo deps-docs
 
@@ -151,6 +153,6 @@ clean-coverage:
 	@rm -rf ./coverage/*
 
 clean-build:
-	@rm -rf .version .branch lib/*
+	@rm -rf lib/*
 
 clean: clean-build clean-docs clean-coverage

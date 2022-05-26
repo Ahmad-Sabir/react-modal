@@ -3,21 +3,31 @@ import ReactDOM from "react-dom";
 import PropTypes from "prop-types";
 import ModalPortal from "./ModalPortal";
 import * as ariaAppHider from "../helpers/ariaAppHider";
-import SafeHTMLElement, { canUseDOM } from "../helpers/safeHTMLElement";
+import SafeHTMLElement, {
+  SafeNodeList,
+  SafeHTMLCollection,
+  canUseDOM
+} from "../helpers/safeHTMLElement";
+
+import { polyfill } from "react-lifecycles-compat";
 
 export const portalClassName = "ReactModalPortal";
 export const bodyOpenClassName = "ReactModal__Body--open";
 
-const isReact16 = ReactDOM.createPortal !== undefined;
-const createPortal = isReact16
-  ? ReactDOM.createPortal
-  : ReactDOM.unstable_renderSubtreeIntoContainer;
+const isReact16 = canUseDOM && ReactDOM.createPortal !== undefined;
+
+let createHTMLElement = name => document.createElement(name);
+
+const getCreatePortal = () =>
+  isReact16
+    ? ReactDOM.createPortal
+    : ReactDOM.unstable_renderSubtreeIntoContainer;
 
 function getParentElement(parentSelector) {
   return parentSelector();
 }
 
-export default class Modal extends Component {
+class Modal extends Component {
   static setAppElement(element) {
     ariaAppHider.setElement(element);
   }
@@ -31,6 +41,7 @@ export default class Modal extends Component {
     }),
     portalClassName: PropTypes.string,
     bodyOpenClassName: PropTypes.string,
+    htmlOpenClassName: PropTypes.string,
     className: PropTypes.oneOfType([
       PropTypes.string,
       PropTypes.shape({
@@ -47,7 +58,12 @@ export default class Modal extends Component {
         beforeClose: PropTypes.string.isRequired
       })
     ]),
-    appElement: PropTypes.instanceOf(SafeHTMLElement),
+    appElement: PropTypes.oneOfType([
+      PropTypes.instanceOf(SafeHTMLElement),
+      PropTypes.instanceOf(SafeHTMLCollection),
+      PropTypes.instanceOf(SafeNodeList),
+      PropTypes.arrayOf(PropTypes.instanceOf(SafeHTMLElement))
+    ]),
     onAfterOpen: PropTypes.func,
     onRequestClose: PropTypes.func,
     closeTimeoutMS: PropTypes.number,
@@ -55,11 +71,18 @@ export default class Modal extends Component {
     shouldFocusAfterRender: PropTypes.bool,
     shouldCloseOnOverlayClick: PropTypes.bool,
     shouldReturnFocusAfterClose: PropTypes.bool,
+    preventScroll: PropTypes.bool,
     parentSelector: PropTypes.func,
     aria: PropTypes.object,
+    data: PropTypes.object,
     role: PropTypes.string,
     contentLabel: PropTypes.string,
-    shouldCloseOnEsc: PropTypes.bool
+    shouldCloseOnEsc: PropTypes.bool,
+    overlayRef: PropTypes.func,
+    contentRef: PropTypes.func,
+    id: PropTypes.string,
+    overlayElement: PropTypes.func,
+    contentElement: PropTypes.func
   };
   /* eslint-enable react/no-unused-prop-types */
 
@@ -67,15 +90,17 @@ export default class Modal extends Component {
     isOpen: false,
     portalClassName,
     bodyOpenClassName,
+    role: "dialog",
     ariaHideApp: true,
     closeTimeoutMS: 0,
     shouldFocusAfterRender: true,
     shouldCloseOnEsc: true,
     shouldCloseOnOverlayClick: true,
     shouldReturnFocusAfterClose: true,
-    parentSelector() {
-      return document.body;
-    }
+    preventScroll: false,
+    parentSelector: () => document.body,
+    overlayElement: (props, contentEl) => <div {...props}>{contentEl}</div>,
+    contentElement: (props, children) => <div {...props}>{children}</div>
   };
 
   static defaultStyles = {
@@ -107,7 +132,7 @@ export default class Modal extends Component {
     if (!canUseDOM) return;
 
     if (!isReact16) {
-      this.node = document.createElement("div");
+      this.node = createHTMLElement("div");
     }
     this.node.className = this.props.portalClassName;
 
@@ -117,28 +142,30 @@ export default class Modal extends Component {
     !isReact16 && this.renderPortal(this.props);
   }
 
-  componentWillReceiveProps(newProps) {
-    if (!canUseDOM) return;
-    const { isOpen } = newProps;
-    // Stop unnecessary renders if modal is remaining closed
-    if (!this.props.isOpen && !isOpen) return;
-
-    const currentParent = getParentElement(this.props.parentSelector);
-    const newParent = getParentElement(newProps.parentSelector);
-
-    if (newParent !== currentParent) {
-      currentParent.removeChild(this.node);
-      newParent.appendChild(this.node);
-    }
-
-    !isReact16 && this.renderPortal(newProps);
+  getSnapshotBeforeUpdate(prevProps) {
+    const prevParent = getParentElement(prevProps.parentSelector);
+    const nextParent = getParentElement(this.props.parentSelector);
+    return { prevParent, nextParent };
   }
 
-  componentWillUpdate(newProps) {
+  componentDidUpdate(prevProps, _, snapshot) {
     if (!canUseDOM) return;
-    if (newProps.portalClassName !== this.props.portalClassName) {
-      this.node.className = newProps.portalClassName;
+    const { isOpen, portalClassName } = this.props;
+
+    if (prevProps.portalClassName !== portalClassName) {
+      this.node.className = portalClassName;
     }
+
+    const { prevParent, nextParent } = snapshot;
+    if (nextParent !== prevParent) {
+      prevParent.removeChild(this.node);
+      nextParent.appendChild(this.node);
+    }
+
+    // Stop unnecessary renders if modal is remaining closed
+    if (!prevProps.isOpen && !isOpen) return;
+
+    !isReact16 && this.renderPortal(this.props);
   }
 
   componentWillUnmount() {
@@ -165,7 +192,16 @@ export default class Modal extends Component {
   removePortal = () => {
     !isReact16 && ReactDOM.unmountComponentAtNode(this.node);
     const parent = getParentElement(this.props.parentSelector);
-    parent.removeChild(this.node);
+    if (parent && parent.contains(this.node)) {
+      parent.removeChild(this.node);
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn(
+        'React-Modal: "parentSelector" prop did not returned any DOM ' +
+          "element. Make sure that the parent element is unmounted to " +
+          "avoid any memory leaks."
+      );
+    }
   };
 
   portalRef = ref => {
@@ -173,6 +209,7 @@ export default class Modal extends Component {
   };
 
   renderPortal = props => {
+    const createPortal = getCreatePortal();
     const portal = createPortal(
       this,
       <ModalPortal defaultStyles={Modal.defaultStyles} {...props} />,
@@ -187,9 +224,10 @@ export default class Modal extends Component {
     }
 
     if (!this.node && isReact16) {
-      this.node = document.createElement("div");
+      this.node = createHTMLElement("div");
     }
 
+    const createPortal = getCreatePortal();
     return createPortal(
       <ModalPortal
         ref={this.portalRef}
@@ -200,3 +238,11 @@ export default class Modal extends Component {
     );
   }
 }
+
+polyfill(Modal);
+
+if (process.env.NODE_ENV !== "production") {
+  Modal.setCreateHTMLElement = fn => (createHTMLElement = fn);
+}
+
+export default Modal;

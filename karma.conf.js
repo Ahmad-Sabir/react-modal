@@ -1,4 +1,4 @@
-let browsers = ['Chrome'];
+let browsers = ['ChromeHeadless'];
 let coverageType = 'text';
 
 if (process.env.CONTINUOUS_INTEGRATION) {
@@ -18,7 +18,7 @@ module.exports = function(config) {
 
     files: ['./specs/index.js'],
 
-    webpack: require('./webpack.test.config'),
+    webpack: require('./scripts/webpack.test.config'),
 
     webpackMiddleware: { stats: 'errors-only' },
 

@@ -1,8 +1,27 @@
 import findTabbable from "../helpers/tabbable";
 
-const focusLaterElements = [];
+let focusLaterElements = [];
 let modalElement = null;
 let needToFocus = false;
+
+/* eslint-disable no-console */
+/* istanbul ignore next */
+export function resetState() {
+  focusLaterElements = [];
+}
+
+/* istanbul ignore next */
+export function log() {
+  if (process.env.NODE_ENV !== "production") {
+    console.log("focusManager ----------");
+    focusLaterElements.forEach(f => {
+      const check = f || {};
+      console.log(check.nodeName, check.className, check.id);
+    });
+    console.log("end focusManager ----------");
+  }
+}
+/* eslint-enable no-console */
 
 export function handleBlur() {
   needToFocus = true;
@@ -34,11 +53,13 @@ export function markForFocusLater() {
 }
 
 /* eslint-disable no-console */
-export function returnFocus() {
+export function returnFocus(preventScroll = false) {
   let toFocus = null;
   try {
-    toFocus = focusLaterElements.pop();
-    toFocus.focus();
+    if (focusLaterElements.length !== 0) {
+      toFocus = focusLaterElements.pop();
+      toFocus.focus({ preventScroll });
+    }
     return;
   } catch (e) {
     console.warn(

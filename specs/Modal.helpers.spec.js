@@ -1,5 +1,6 @@
 /* eslint-env mocha */
 import "should";
+import "@webcomponents/custom-elements/src/native-shim";
 import tabbable from "../src/helpers/tabbable";
 import "sinon";
 
@@ -99,11 +100,74 @@ export default () => {
 
       it("includes inputs visible because of overflow == visible", () => {
         const input = document.createElement("input");
-        elem.style.width = "0";
-        elem.style.height = "0";
-        elem.style.overflow = "visible";
+        input.style.width = "0";
+        input.style.height = "0";
+        input.style.overflow = "visible";
         elem.appendChild(input);
         tabbable(elem).should.containEql(input);
+      });
+
+      it("excludes elements with overflow == visible if there is no visible content", () => {
+        const button = document.createElement("button");
+        button.innerHTML = "You can't see me!";
+        button.style.display = "none";
+        button.style.overflow = "visible";
+        elem.appendChild(button);
+        tabbable(elem).should.not.containEql(button);
+      });
+
+      describe("inside Web Components", () => {
+        let wc;
+        let input;
+        class TestWebComponent extends HTMLElement {
+          constructor() {
+            super();
+          }
+
+          connectedCallback() {
+            this.attachShadow({
+              mode: "open"
+            });
+            this.style.display = "block";
+            this.style.width = "100px";
+            this.style.height = "25px";
+          }
+        }
+
+        const registerTestComponent = () => {
+          if (window.customElements.get("test-web-component")) {
+            return;
+          }
+          window.customElements.define("test-web-component", TestWebComponent);
+        };
+
+        beforeEach(() => {
+          registerTestComponent();
+          wc = document.createElement("test-web-component");
+
+          input = document.createElement("input");
+          elem.appendChild(input);
+
+          document.body.appendChild(wc);
+          wc.shadowRoot.appendChild(elem);
+        });
+
+        afterEach(() => {
+          // re-add elem to body for the next afterEach
+          document.body.appendChild(elem);
+
+          // remove Web Component
+          document.body.removeChild(wc);
+        });
+
+        it("includes elements when inside a Shadow DOM", () => {
+          tabbable(elem).should.containEql(input);
+        });
+
+        it("excludes elements when hidden inside a Shadow DOM", () => {
+          wc.style.display = "none";
+          tabbable(elem).should.not.containEql(input);
+        });
       });
     });
   });
